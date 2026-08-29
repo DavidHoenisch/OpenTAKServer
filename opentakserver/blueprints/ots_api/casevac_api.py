@@ -159,7 +159,8 @@ def delete_casevac():
         {"TAK-Server-f1a8159ef7804f7a8a32d8efc4b773d0": iso8601_string_from_datetime(now)},
     )
 
-    route_cot(tostring(event).decode("utf-8"), current_user)
+    route_user = casevac.eud.user if casevac.eud and casevac.eud.user else current_user
+    route_cot(tostring(event).decode("utf-8"), route_user)
 
     db.session.delete(casevac)
     db.session.commit()
