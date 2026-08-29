@@ -646,11 +646,12 @@ class CoTController:
         if medevac:
             zmist = medevac.find("zMist")
             with self.context:
-                for a in medevac.attrs:
-                    if medevac.attrs[a].lower() == "true":
-                        medevac.attrs[a] = True
-                    elif medevac.attrs[a].lower() == "false":
-                        medevac.attrs[a] = False
+                casevac_attributes, ignored_attributes = CasEvac.cot_attributes(medevac.attrs)
+                if ignored_attributes:
+                    self.logger.warning(
+                        "Ignoring unsupported CASEVAC attributes: %s",
+                        ", ".join(sorted(ignored_attributes)),
+                    )
 
                 try:
                     self.db.session.execute(
@@ -660,7 +661,7 @@ class CoTController:
                             uid=event.attrs["uid"],
                             point_id=point_pk,
                             cot_id=cot_pk,
-                            **medevac.attrs,
+                            **casevac_attributes,
                         )
                     )
 
@@ -673,7 +674,7 @@ class CoTController:
                     self.db.session.execute(
                         update(CasEvac)
                         .where(CasEvac.uid == event.attrs["uid"])
-                        .values(**medevac.attrs)
+                        .values(**casevac_attributes)
                     )
 
                     if zmist:

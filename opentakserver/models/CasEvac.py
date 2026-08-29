@@ -59,6 +59,8 @@ class CasEvac(db.Model):
     ventilator: Mapped[bool] = mapped_column(Boolean, nullable=True)
     winds_are_from: Mapped[str] = mapped_column(String(255), nullable=True)
     zone_prot_selection: Mapped[int] = mapped_column(Integer, nullable=True)
+    zone_protected_coord: Mapped[str] = mapped_column(String(255), nullable=True)
+    zone_prot_marker: Mapped[str] = mapped_column(String(255), nullable=True)
     urgent_surgical: Mapped[str] = mapped_column(String(255), nullable=True)
     point_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("points.id", ondelete="CASCADE"), nullable=True
@@ -114,6 +116,26 @@ class CasEvac(db.Model):
         self.ventilator = form.ventilator.data
         self.winds_are_from = form.winds_are_from.data
         self.zone_prot_selection = form.zone_prot_selection.data
+        self.zone_protected_coord = form.zone_protected_coord.data
+        self.zone_prot_marker = form.zone_prot_marker.data
+
+    @classmethod
+    def cot_attributes(cls, attributes):
+        server_managed_columns = {"id", "sender_uid", "uid", "timestamp", "point_id", "cot_id"}
+        accepted_columns = set(cls.__table__.columns.keys()) - server_managed_columns
+        values = {}
+        ignored = []
+
+        for name, value in attributes.items():
+            if name not in accepted_columns:
+                ignored.append(name)
+                continue
+
+            if isinstance(value, str) and value.lower() in {"true", "false"}:
+                value = value.lower() == "true"
+            values[name] = value
+
+        return values, ignored
 
     def serialize(self):
         return {
@@ -160,6 +182,8 @@ class CasEvac(db.Model):
             "ventilator": self.ventilator,
             "winds_are_from": self.winds_are_from,
             "zone_prot_selection": self.zone_prot_selection,
+            "zone_protected_coord": self.zone_protected_coord,
+            "zone_prot_marker": self.zone_prot_marker,
             "eud": self.eud,
         }
 
@@ -211,6 +235,8 @@ class CasEvac(db.Model):
             "ventilator": self.ventilator,
             "winds_are_from": self.winds_are_from,
             "zone_prot_selection": self.zone_prot_selection,
+            "zone_protected_coord": self.zone_protected_coord,
+            "zone_prot_marker": self.zone_prot_marker,
             "zmist": self.zmist.serialize() if self.zmist else None,
             "eud": self.eud.to_json() if self.eud else None,
             "point": self.point.to_json() if self.point else None,
@@ -327,6 +353,10 @@ class CasEvac(db.Model):
             medevac.set("winds_are_from", self.winds_are_from)
         if self.zone_prot_selection is not None:
             medevac.set("zone_prot_selection", str(self.zone_prot_selection))
+        if self.zone_protected_coord:
+            medevac.set("zone_protected_coord", self.zone_protected_coord)
+        if self.zone_prot_marker:
+            medevac.set("zone_prot_marker", self.zone_prot_marker)
 
         if self.zmist:
             zmist_map = ET.SubElement(medevac, "zMistsMap")

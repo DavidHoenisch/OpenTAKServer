@@ -47,4 +47,6 @@ class CasEvacForm(PointForm):
     ventilator = BooleanField()
     winds_are_from = StringField()
     zone_prot_selection = IntegerField()
+    zone_protected_coord = StringField()
+    zone_prot_marker = StringField()
     zmist = FieldList(FormField(ZmistForm), min_entries=0)
