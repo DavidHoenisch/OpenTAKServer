@@ -163,5 +163,6 @@ def delete_casevac():
 
     db.session.delete(casevac)
     db.session.commit()
+    socketio.emit("casevac_delete", {"uid": uid}, namespace="/socket.io")
 
     return jsonify({"success": True})

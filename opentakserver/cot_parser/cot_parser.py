@@ -694,6 +694,32 @@ class CoTController:
                     self.logger.error(f"Failed to emit CasEvac: {e}")
                     self.logger.debug(traceback.format_exc())
 
+    def parse_casevac_delete(self, event):
+        if event.attrs.get("type") != "t-x-d-d":
+            return False
+
+        target_uids = [event.attrs.get("uid")]
+        link = event.find("link", attrs={"relation": "p-p"})
+        if link and link.attrs.get("uid") not in target_uids:
+            target_uids.append(link.attrs.get("uid"))
+
+        with self.context:
+            for target_uid in filter(None, target_uids):
+                result = self.db.session.execute(
+                    self.db.session.query(CasEvac).filter_by(uid=target_uid)
+                ).first()
+                if not result:
+                    continue
+
+                casevac = result[0]
+                self.db.session.delete(casevac)
+                self.db.session.commit()
+                self.socketio.emit("casevac_delete", {"uid": casevac.uid}, namespace="/socket.io")
+                self.logger.info("Deleted CASEVAC %s from forced-delete CoT", casevac.uid)
+                return True
+
+        return False
+
     def parse_marker(self, event, uid, point_pk, cot_pk):
         if (
             (
@@ -1244,6 +1270,7 @@ class CoTController:
 
             if event:
                 cot_pk = self.insert_cot(soup, event, uid)
+                self.parse_casevac_delete(event)
                 point_pk = self.parse_point(event, uid, cot_pk)
                 self.parse_geochat(event, cot_pk, point_pk)
                 self.parse_video(event, cot_pk)
@@ -1257,7 +1284,7 @@ class CoTController:
                 self.rabbit_channel.basic_ack(delivery_tag=basic_deliver.delivery_tag)
 
                 # EUD went offline
-                if event.attrs["type"] == "t-x-d-d":
+                if event.attrs["type"] == "t-x-d-d" and event.attrs["uid"] == uid:
 
                     try:
                         with self.context:
