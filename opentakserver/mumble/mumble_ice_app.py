@@ -16,6 +16,10 @@ Ice.loadSlice(
 import Murmur  # noqa: E402
 
 
+class MumbleConfigurationError(RuntimeError):
+    """Raised when retrying cannot repair the Mumble Ice configuration."""
+
+
 class MumbleIceDaemon(threading.Thread):
     def __init__(self, app, logger):
         super().__init__()
@@ -47,28 +51,39 @@ class MumbleIceDaemon(threading.Thread):
         try:
             mumble_ice_app = MumbleIceApp(self.app, self.logger, ice)
             if not mumble_ice_app.initialize_ice_connection():
-                return
+                return False
 
             self.logger.info("Mumble authentication handler connected")
             while not self.shutdown_event.wait(retry_seconds):
                 if not mumble_ice_app.attach_callbacks():
-                    return
+                    return True
+            return True
         finally:
             ice.destroy()
 
     def run(self):
-        retry_seconds = self.app.config.get("OTS_MUMBLE_ICE_RETRY_SECONDS", 5)
+        retry_seconds = max(1, self.app.config.get("OTS_MUMBLE_ICE_RETRY_SECONDS", 5))
+        max_retry_seconds = max(
+            retry_seconds,
+            self.app.config.get("OTS_MUMBLE_ICE_MAX_RETRY_SECONDS", 60),
+        )
+        retry_delay = retry_seconds
 
         while not self.shutdown_event.is_set():
+            connected = False
             try:
-                self._run_once()
+                connected = self._run_once()
+            except MumbleConfigurationError as e:
+                self.logger.error("Mumble authentication handler stopped: %s", e)
+                return
             except Ice.Exception as e:
                 self.logger.warning("Mumble Ice connection failed: %s", e)
-            except BaseException as e:
+            except Exception as e:
                 self.logger.error("Mumble authentication handler failed: %s", e)
 
-            if self.shutdown_event.wait(retry_seconds):
+            if self.shutdown_event.wait(retry_delay):
                 break
+            retry_delay = retry_seconds if connected else min(retry_delay * 2, max_retry_seconds)
 
 
 class MumbleIceApp(Ice.Application):
@@ -131,25 +146,18 @@ class MumbleIceApp(Ice.Application):
                 )
                 server.setAuthenticator(self.auth)
 
-        except (
-            Murmur.InvalidSecretException,
-            Ice.UnknownUserException,
-            Ice.ConnectionRefusedException,
-        ) as e:
-            if isinstance(e, Ice.ConnectionRefusedException):
-                self.logger.warning("Server refused connection")
-            elif (
-                isinstance(e, Murmur.InvalidSecretException)
-                or isinstance(e, Ice.UnknownUserException)
-                and (e.unknown == "Murmur::InvalidSecretException")
-            ):
-                self.logger.error("Invalid ice secret")
-            else:
-                # We do not actually want to handle this one, re-raise it
-                raise e
-
+        except Ice.ConnectionRefusedException:
+            self.logger.warning("Server refused connection")
             self.connected = False
             return False
+        except Murmur.InvalidSecretException as e:
+            self.connected = False
+            raise MumbleConfigurationError("invalid Ice secret") from e
+        except Ice.UnknownUserException as e:
+            if e.unknown != "Murmur::InvalidSecretException":
+                raise
+            self.connected = False
+            raise MumbleConfigurationError("invalid Ice secret") from e
 
         self.connected = True
         return True
