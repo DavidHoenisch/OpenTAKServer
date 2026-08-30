@@ -60,6 +60,7 @@ sqlalchemy-utils = "0.42.0"
 tldextract = "5.3.0"
 unishox2-py3 = "1.0.0"
 yt-dlp = "*"
+zeroc-ice = "3.7.11"
 # Keep zope-event at 5.1.1, DO NOT UPGRADE
 zope-event = "*"
 zope-interface = "*"

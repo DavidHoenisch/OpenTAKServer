@@ -139,7 +139,14 @@ class DefaultConfig:
 
     OTS_PROFILE_MAP_SOURCES = True
 
-    OTS_ENABLE_MUMBLE_AUTHENTICATION = False
+    OTS_ENABLE_MUMBLE_AUTHENTICATION = os.getenv(
+        "OTS_ENABLE_MUMBLE_AUTHENTICATION", "False"
+    ).lower() in ["true", "1", "yes"]
+    OTS_MUMBLE_ICE_HOST = os.getenv("OTS_MUMBLE_ICE_HOST", "127.0.0.1")
+    OTS_MUMBLE_ICE_PORT = int(os.getenv("OTS_MUMBLE_ICE_PORT", 6502))
+    OTS_MUMBLE_ICE_CALLBACK_HOST = os.getenv("OTS_MUMBLE_ICE_CALLBACK_HOST", "127.0.0.1")
+    OTS_MUMBLE_ICE_SECRET = os.getenv("OTS_MUMBLE_ICE_SECRET", "")
+    OTS_MUMBLE_ICE_RETRY_SECONDS = int(os.getenv("OTS_MUMBLE_ICE_RETRY_SECONDS", 5))
 
     OTS_IP_WHITELIST = ["127.0.0.1"]
 
@@ -177,7 +184,7 @@ class DefaultConfig:
 
     # flask-sqlalchemy
     SQLALCHEMY_DATABASE_URI = os.getenv(
-        "SQLALCHEMY_DATABASE_URI", f"postgresql+psycopg://ots:POSTGRESQL_PASSWORD@127.0.0.1/ots"
+        "SQLALCHEMY_DATABASE_URI", "postgresql+psycopg://ots:POSTGRESQL_PASSWORD@127.0.0.1/ots"
     )
     SQLALCHEMY_ECHO = os.getenv("SQLALCHEMY_ECHO", "False").lower() in ["true", "1", "yes"]
     SQLALCHEMY_ENGINE_OPTIONS = {"pool_pre_ping": True}
