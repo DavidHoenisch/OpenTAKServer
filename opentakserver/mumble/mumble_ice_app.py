@@ -1,6 +1,5 @@
 import os
 import threading
-from threading import Timer
 
 import Ice
 
@@ -14,7 +13,11 @@ Ice.loadSlice(
         os.path.join(os.path.dirname(os.path.realpath(__file__)), "Murmur.ice"),
     ],
 )
-import Murmur
+import Murmur  # noqa: E402
+
+
+class MumbleConfigurationError(RuntimeError):
+    """Raised when retrying cannot repair the Mumble Ice configuration."""
 
 
 class MumbleIceDaemon(threading.Thread):
@@ -24,9 +27,23 @@ class MumbleIceDaemon(threading.Thread):
         self.logger = logger
         self.logger.info("mumble daemon init")
         self.daemon = True
+        self.shutdown_event = threading.Event()
+        self.readiness_path = os.path.join(
+            self.app.config.get("OTS_DATA_FOLDER"), "mumble-auth.ready"
+        )
+        self._set_ready(False)
 
-    def run(self):
-        # Configure Ice properties
+    def _set_ready(self, ready):
+        if ready:
+            with open(self.readiness_path, "w", encoding="utf-8") as readiness_file:
+                readiness_file.write("ready\n")
+            return
+        try:
+            os.remove(self.readiness_path)
+        except FileNotFoundError:
+            pass
+
+    def _create_communicator(self):
         props = Ice.createProperties()
         props.setProperty("Ice.ImplicitContext", "Shared")
         props.setProperty("Ice.Default.EncodingVersion", "1.0")
@@ -35,20 +52,55 @@ class MumbleIceDaemon(threading.Thread):
         idata = Ice.InitializationData()
         idata.properties = props
 
-        # Create Ice connection
         ice = Ice.initialize(idata)
-        proxy = ice.stringToProxy("Meta:tcp -h 127.0.0.1 -p 6502")
-        secret = ""
-        if secret != "":
+        secret = self.app.config.get("OTS_MUMBLE_ICE_SECRET", "")
+        if secret:
             ice.getImplicitContext().put("secret", secret)
-        try:
-            meta = Murmur.MetaPrx.checkedCast(proxy)
-        except Ice.ConnectionRefusedException:
-            self.logger.error("Failed to connect to the mumble ice server")
-            return
+        return ice
 
-        mumble_ice_app = MumbleIceApp(self.app, self.logger, ice)
-        mumble_ice_app.run()
+    def _run_once(self):
+        ice = self._create_communicator()
+        retry_seconds = self.app.config.get("OTS_MUMBLE_ICE_RETRY_SECONDS", 5)
+
+        try:
+            mumble_ice_app = MumbleIceApp(self.app, self.logger, ice)
+            if not mumble_ice_app.initialize_ice_connection():
+                return False
+
+            self.logger.info("Mumble authentication handler connected")
+            self._set_ready(True)
+            while not self.shutdown_event.wait(retry_seconds):
+                if not mumble_ice_app.attach_callbacks():
+                    return True
+            return True
+        finally:
+            self._set_ready(False)
+            ice.destroy()
+
+    def run(self):
+        retry_seconds = max(1, self.app.config.get("OTS_MUMBLE_ICE_RETRY_SECONDS", 5))
+        max_retry_seconds = max(
+            retry_seconds,
+            self.app.config.get("OTS_MUMBLE_ICE_MAX_RETRY_SECONDS", 60),
+        )
+        retry_delay = retry_seconds
+
+        while not self.shutdown_event.is_set():
+            connected = False
+            try:
+                connected = self._run_once()
+            except MumbleConfigurationError as e:
+                self.logger.error("Mumble authentication handler stopped: %s", e)
+                self._set_ready(False)
+                return
+            except Ice.Exception as e:
+                self.logger.warning("Mumble Ice connection failed: %s", e)
+            except Exception as e:
+                self.logger.error("Mumble authentication handler failed: %s", e)
+
+            if self.shutdown_event.wait(retry_delay):
+                break
+            retry_delay = retry_seconds if connected else min(retry_delay * 2, max_retry_seconds)
 
 
 class MumbleIceApp(Ice.Application):
@@ -63,20 +115,10 @@ class MumbleIceApp(Ice.Application):
         self.failed_watch = False
         self.watchdog = None
         self.auth = None
+        self.adapter = None
 
     def run(self, *args):
-        if not self.initialize_ice_connection():
-            self.logger.error("Mumble server connection failed")
-            return 1
-
-        self.check_connection()
-
-        self.watchdog.cancel()
-
-        if self.interrupted():
-            self.logger.warning("Caught interrupt, shutting down")
-
-        return 0
+        return 0 if self.initialize_ice_connection() else 1
 
     def initialize_ice_connection(self):
         """
@@ -84,20 +126,23 @@ class MumbleIceApp(Ice.Application):
         configured servers
         """
 
-        # if False and 'ice_secret':
-        #     self.ice.getImplicitContext().put("secret", "some_secret")
+        host = self.app.config.get("OTS_MUMBLE_ICE_HOST", "127.0.0.1")
+        port = self.app.config.get("OTS_MUMBLE_ICE_PORT", 6502)
+        callback_host = self.app.config.get("OTS_MUMBLE_ICE_CALLBACK_HOST", "127.0.0.1")
 
-        self.logger.debug("Connecting to Ice server ({}:{})".format("127.0.0.1", 6502))
-        base = self.ice.stringToProxy("Meta:tcp -h {} -p {}".format("127.0.0.1", 6502))
+        self.logger.debug("Connecting to Ice server (%s:%s)", host, port)
+        base = self.ice.stringToProxy(f"Meta:tcp -h {host} -p {port}")
         self.meta = Murmur.MetaPrx.uncheckedCast(base)
 
-        adapter = self.ice.createObjectAdapterWithEndpoints("Callback.Client", "tcp -h 127.0.0.1")
-        adapter.activate()
+        self.adapter = self.ice.createObjectAdapterWithEndpoints(
+            "Callback.Client", f"tcp -h {callback_host}"
+        )
+        self.adapter.activate()
 
-        metacbprx = adapter.addWithUUID(MetaCallback(self))
+        metacbprx = self.adapter.addWithUUID(MetaCallback(self))
         self.metacb = Murmur.MetaCallbackPrx.uncheckedCast(metacbprx)
 
-        authprx = adapter.addWithUUID(MumbleAuthenticator(self.app, self.logger, self.ice))
+        authprx = self.adapter.addWithUUID(MumbleAuthenticator(self.app, self.logger, self.ice))
         self.auth = Murmur.ServerUpdatingAuthenticatorPrx.uncheckedCast(authprx)
 
         return self.attach_callbacks()
@@ -118,45 +163,21 @@ class MumbleIceApp(Ice.Application):
                 )
                 server.setAuthenticator(self.auth)
 
-        except (
-            Murmur.InvalidSecretException,
-            Ice.UnknownUserException,
-            Ice.ConnectionRefusedException,
-        ) as e:
-            if isinstance(e, Ice.ConnectionRefusedException):
-                self.logger.warning("Server refused connection")
-            elif (
-                isinstance(e, Murmur.InvalidSecretException)
-                or isinstance(e, Ice.UnknownUserException)
-                and (e.unknown == "Murmur::InvalidSecretException")
-            ):
-                self.logger.error("Invalid ice secret")
-            else:
-                # We do not actually want to handle this one, re-raise it
-                raise e
-
+        except Ice.ConnectionRefusedException:
+            self.logger.warning("Server refused connection")
             self.connected = False
             return False
+        except Murmur.InvalidSecretException as e:
+            self.connected = False
+            raise MumbleConfigurationError("invalid Ice secret") from e
+        except Ice.UnknownUserException as e:
+            if e.unknown != "Murmur::InvalidSecretException":
+                raise
+            self.connected = False
+            raise MumbleConfigurationError("invalid Ice secret") from e
 
         self.connected = True
         return True
-
-    def check_connection(self):
-        """
-        Tries reapplies all callbacks to make sure the authenticator
-        survives server restarts and disconnects.
-        """
-
-        try:
-            self.attach_callbacks()
-        except Ice.Exception as e:
-            self.logger.warning(
-                "{}: Failed connection check, will retry in next watchdog run ({}s)".format(e, 10)
-            )
-
-        # Renew the timer
-        self.watchdog = Timer(10, self.check_connection)
-        self.watchdog.start()
 
 
 class MetaCallback(Murmur.MetaCallback):

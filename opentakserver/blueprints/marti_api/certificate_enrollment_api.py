@@ -1,5 +1,6 @@
 import base64
 import datetime
+import hashlib
 import os
 import traceback
 from urllib.parse import urlparse
@@ -21,6 +22,10 @@ from opentakserver.models.EUD import EUD
 from opentakserver.models.Token import Token
 
 certificate_authority_api_blueprint = Blueprint("certificate_authority_api_blueprint", __name__)
+
+
+def enrollment_eud_is_owned_by_user(eud, user):
+    return not eud or eud.user_id in (None, user.id)
 
 
 # flask-security's http_auth_required() decorator will deny access because ATAK doesn't do CSRF,
@@ -97,6 +102,27 @@ def sign_csr_v2():
         else:
             uid = request.args.get("clientUid")
 
+        try:
+            username = (
+                base64.b64decode(
+                    request.headers.get("Authorization").split(" ")[-1].encode("utf-8")
+                )
+                .decode("utf-8")
+                .split(":", 1)[0]
+            )
+        except (AttributeError, UnicodeDecodeError, ValueError):
+            return "", 401
+        user = app.security.datastore.find_user(username=bleach.clean(username))
+        if not user:
+            return "", 401
+        if not uid:
+            return "", 400
+
+        existing_eud = db.session.execute(db.session.query(EUD).filter_by(uid=uid)).scalar()
+        if not enrollment_eud_is_owned_by_user(existing_eud, user):
+            logger.warning("Refusing certificate enrollment for EUD %s owned by another user", uid)
+            return "", 403
+
         csr = request.data.decode("utf-8")
         if "BEGIN CERTIFICATE REQUEST" not in csr:
             csr = "-----BEGIN CERTIFICATE REQUEST-----\n" + csr
@@ -112,8 +138,11 @@ def sign_csr_v2():
         logger.debug("Attempting to sign CSR for {}".format(common_name))
 
         cert_authority = CertificateAuthority(logger, app)
+        certificate_storage_name = hashlib.sha256(uid.encode("utf-8")).hexdigest()
 
-        signed_csr = cert_authority.sign_csr(csr.encode(), common_name, False).decode("utf-8")
+        signed_csr = cert_authority.sign_csr(
+            csr.encode(), common_name, False, storage_name=certificate_storage_name
+        ).decode("utf-8")
         signed_csr = signed_csr.replace("-----BEGIN CERTIFICATE-----\n", "")
         signed_csr = signed_csr.replace("\n-----END CERTIFICATE-----\n", "")
 
@@ -142,14 +171,6 @@ def sign_csr_v2():
             response = tostring(enrollment).decode("utf-8")
             response = '<?xml version="1.0" encoding="UTF-8"?>\n' + response
 
-        username, password = (
-            base64.b64decode(request.headers.get("Authorization").split(" ")[-1].encode("utf-8"))
-            .decode("utf-8")
-            .split(":")
-        )
-        username = bleach.clean(username)
-        user = app.security.datastore.find_user(username=username)
-
         try:
             if uid:
                 eud = EUD()
@@ -161,6 +182,12 @@ def sign_csr_v2():
         except sqlalchemy.exc.IntegrityError:
             db.session.rollback()
             eud = db.session.execute(db.session.query(EUD).filter_by(uid=uid)).first()[0]
+            if not enrollment_eud_is_owned_by_user(eud, user):
+                logger.warning(
+                    "Refusing certificate enrollment race for EUD %s owned by another user",
+                    uid,
+                )
+                return "", 403
             if user and not eud.user_id:
                 eud.user_id = user.id
                 db.session.add(eud)
@@ -181,10 +208,16 @@ def sign_csr_v2():
                     app.config.get("OTS_CA_FOLDER"), "truststore-root.p12"
                 )
                 certificate.user_cert_filename = os.path.join(
-                    app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".pem"
+                    app.config.get("OTS_CA_FOLDER"),
+                    "certs",
+                    certificate_storage_name,
+                    certificate_storage_name + ".pem",
                 )
                 certificate.csr = os.path.join(
-                    app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".csr"
+                    app.config.get("OTS_CA_FOLDER"),
+                    "certs",
+                    certificate_storage_name,
+                    certificate_storage_name + ".csr",
                 )
                 certificate.cert_password = app.config.get("OTS_CA_PASSWORD")
 
@@ -207,10 +240,16 @@ def sign_csr_v2():
                     app.config.get("OTS_CA_FOLDER"), "truststore-root.p12"
                 )
                 certificate.user_cert_filename = os.path.join(
-                    app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".pem"
+                    app.config.get("OTS_CA_FOLDER"),
+                    "certs",
+                    certificate_storage_name,
+                    certificate_storage_name + ".pem",
                 )
                 certificate.csr = os.path.join(
-                    app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".csr"
+                    app.config.get("OTS_CA_FOLDER"),
+                    "certs",
+                    certificate_storage_name,
+                    certificate_storage_name + ".csr",
                 )
                 certificate.cert_password = app.config.get("OTS_CA_PASSWORD")
 
