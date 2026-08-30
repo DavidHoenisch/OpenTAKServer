@@ -107,13 +107,20 @@ def test_verified_leaf_resolves_through_exact_enrollment_record(tmp_path):
     app.config.get.return_value = str(tmp_path)
     enrollment = MagicMock(
         common_name="enrollment-csr-cn",
+        eud_uid="ANDROID-real",
         user_cert_filename=str(client_path),
         eud=MagicMock(uid="ANDROID-real", user_id=42, callsign="ANVIL"),
+    )
+    ambiguous_victim = MagicMock(
+        common_name="enrollment-csr-cn",
+        eud_uid="ANDROID-victim",
+        user_cert_filename=str(client_path),
     )
     certificate_model = MagicMock()
     certificate_model.query.filter_by.return_value.all.side_effect = [
         [enrollment],
         [],
+        [enrollment, ambiguous_victim],
     ]
     certificate_module = ModuleType("opentakserver.models.Certificate")
     certificate_module.Certificate = certificate_model
@@ -125,10 +132,14 @@ def test_verified_leaf_resolves_through_exact_enrollment_record(tmp_path):
         rejected_spoof = MumbleAuthenticator._verified_certificate_record(
             app, [spoof.public_bytes(serialization.Encoding.DER)]
         )
+        rejected_ambiguity = MumbleAuthenticator._verified_certificate_record(
+            app, [client.public_bytes(serialization.Encoding.DER)]
+        )
 
     assert resolved.eud.uid == "ANDROID-real"
     assert resolved.common_name != resolved.eud.uid
     assert rejected_spoof is None
+    assert rejected_ambiguity is None
 
 
 def test_vx_username_must_match_enrolled_eud_callsign():

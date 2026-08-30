@@ -1,5 +1,6 @@
 import base64
 import datetime
+import hashlib
 import os
 import traceback
 from urllib.parse import urlparse
@@ -137,8 +138,11 @@ def sign_csr_v2():
         logger.debug("Attempting to sign CSR for {}".format(common_name))
 
         cert_authority = CertificateAuthority(logger, app)
+        certificate_storage_name = hashlib.sha256(uid.encode("utf-8")).hexdigest()
 
-        signed_csr = cert_authority.sign_csr(csr.encode(), common_name, False).decode("utf-8")
+        signed_csr = cert_authority.sign_csr(
+            csr.encode(), common_name, False, storage_name=certificate_storage_name
+        ).decode("utf-8")
         signed_csr = signed_csr.replace("-----BEGIN CERTIFICATE-----\n", "")
         signed_csr = signed_csr.replace("\n-----END CERTIFICATE-----\n", "")
 
@@ -204,10 +208,16 @@ def sign_csr_v2():
                     app.config.get("OTS_CA_FOLDER"), "truststore-root.p12"
                 )
                 certificate.user_cert_filename = os.path.join(
-                    app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".pem"
+                    app.config.get("OTS_CA_FOLDER"),
+                    "certs",
+                    certificate_storage_name,
+                    certificate_storage_name + ".pem",
                 )
                 certificate.csr = os.path.join(
-                    app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".csr"
+                    app.config.get("OTS_CA_FOLDER"),
+                    "certs",
+                    certificate_storage_name,
+                    certificate_storage_name + ".csr",
                 )
                 certificate.cert_password = app.config.get("OTS_CA_PASSWORD")
 
@@ -230,10 +240,16 @@ def sign_csr_v2():
                     app.config.get("OTS_CA_FOLDER"), "truststore-root.p12"
                 )
                 certificate.user_cert_filename = os.path.join(
-                    app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".pem"
+                    app.config.get("OTS_CA_FOLDER"),
+                    "certs",
+                    certificate_storage_name,
+                    certificate_storage_name + ".pem",
                 )
                 certificate.csr = os.path.join(
-                    app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".csr"
+                    app.config.get("OTS_CA_FOLDER"),
+                    "certs",
+                    certificate_storage_name,
+                    certificate_storage_name + ".csr",
                 )
                 certificate.cert_password = app.config.get("OTS_CA_PASSWORD")
 

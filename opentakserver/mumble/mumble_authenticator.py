@@ -92,12 +92,16 @@ class MumbleAuthenticator(Murmur.ServerUpdatingAuthenticator):
             return None
 
         records = Certificate.query.filter_by(common_name=common_names[0].value).all()
-        for record in records:
+        matches = [
+            record
+            for record in records
             if MumbleAuthenticator._stored_certificate_matches(
                 certificate, record.user_cert_filename
-            ):
-                return record
-        return None
+            )
+        ]
+        if len({record.eud_uid for record in matches}) != 1:
+            return None
+        return matches[0] if matches else None
 
     @staticmethod
     def _canonical_vx_username(eud, presented_username):

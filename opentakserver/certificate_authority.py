@@ -247,13 +247,18 @@ class CertificateAuthority:
                     "Failed to generate server's public key. Exit code {}".format(exit_code)
                 )
 
-    def sign_csr(self, csr_bytes, common_name, server=False):
+    def sign_csr(self, csr_bytes, common_name, server=False, storage_name=None):
+        certificate_name = storage_name or common_name
         os.makedirs(
-            os.path.join(self.app.config.get("OTS_CA_FOLDER"), "certs", common_name), exist_ok=True
+            os.path.join(self.app.config.get("OTS_CA_FOLDER"), "certs", certificate_name),
+            exist_ok=True,
         )
         f = open(
             os.path.join(
-                self.app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".csr"
+                self.app.config.get("OTS_CA_FOLDER"),
+                "certs",
+                certificate_name,
+                certificate_name + ".csr",
             ),
             "wb",
         )
@@ -270,8 +275,8 @@ class CertificateAuthority:
                 os.path.join(
                     self.app.config.get("OTS_CA_FOLDER"),
                     "certs",
-                    common_name,
-                    "{}_config.cfg".format(common_name),
+                    certificate_name,
+                    "{}_config.cfg".format(certificate_name),
                 ),
                 "w",
             )
@@ -283,8 +288,8 @@ class CertificateAuthority:
             config_file = os.path.join(
                 self.app.config.get("OTS_CA_FOLDER"),
                 "certs",
-                common_name,
-                "{}_config.cfg".format(common_name),
+                certificate_name,
+                "{}_config.cfg".format(certificate_name),
             )
             extensions = "server"
         else:
@@ -294,12 +299,18 @@ class CertificateAuthority:
         command = "openssl x509 -sha256 -req -days {} -in {} -CA {} -CAkey {} -out {} -set_serial {} -passin pass:{} -extensions {} -extfile {}".format(
             self.app.config.get("OTS_CA_EXPIRATION_TIME"),
             os.path.join(
-                self.app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".csr"
+                self.app.config.get("OTS_CA_FOLDER"),
+                "certs",
+                certificate_name,
+                certificate_name + ".csr",
             ),
             os.path.join(self.app.config.get("OTS_CA_FOLDER"), "ca.pem"),
             os.path.join(self.app.config.get("OTS_CA_FOLDER"), "ca-do-not-share.key"),
             os.path.join(
-                self.app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".pem"
+                self.app.config.get("OTS_CA_FOLDER"),
+                "certs",
+                certificate_name,
+                certificate_name + ".pem",
             ),
             random.randint(10000, 100000),
             self.app.config.get("OTS_CA_PASSWORD"),
@@ -319,8 +330,8 @@ class CertificateAuthority:
                     os.path.join(
                         self.app.config.get("OTS_CA_FOLDER"),
                         "certs",
-                        common_name,
-                        common_name + ".pem",
+                        certificate_name,
+                        certificate_name + ".pem",
                     ),
                     "a",
                 )
@@ -329,7 +340,10 @@ class CertificateAuthority:
 
         f = open(
             os.path.join(
-                self.app.config.get("OTS_CA_FOLDER"), "certs", common_name, common_name + ".pem"
+                self.app.config.get("OTS_CA_FOLDER"),
+                "certs",
+                certificate_name,
+                certificate_name + ".pem",
             ),
             "r",
         )
