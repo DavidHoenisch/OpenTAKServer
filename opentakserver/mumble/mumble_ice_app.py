@@ -28,6 +28,20 @@ class MumbleIceDaemon(threading.Thread):
         self.logger.info("mumble daemon init")
         self.daemon = True
         self.shutdown_event = threading.Event()
+        self.readiness_path = os.path.join(
+            self.app.config.get("OTS_DATA_FOLDER"), "mumble-auth.ready"
+        )
+        self._set_ready(False)
+
+    def _set_ready(self, ready):
+        if ready:
+            with open(self.readiness_path, "w", encoding="utf-8") as readiness_file:
+                readiness_file.write("ready\n")
+            return
+        try:
+            os.remove(self.readiness_path)
+        except FileNotFoundError:
+            pass
 
     def _create_communicator(self):
         props = Ice.createProperties()
@@ -54,11 +68,13 @@ class MumbleIceDaemon(threading.Thread):
                 return False
 
             self.logger.info("Mumble authentication handler connected")
+            self._set_ready(True)
             while not self.shutdown_event.wait(retry_seconds):
                 if not mumble_ice_app.attach_callbacks():
                     return True
             return True
         finally:
+            self._set_ready(False)
             ice.destroy()
 
     def run(self):
@@ -75,6 +91,7 @@ class MumbleIceDaemon(threading.Thread):
                 connected = self._run_once()
             except MumbleConfigurationError as e:
                 self.logger.error("Mumble authentication handler stopped: %s", e)
+                self._set_ready(False)
                 return
             except Ice.Exception as e:
                 self.logger.warning("Mumble Ice connection failed: %s", e)

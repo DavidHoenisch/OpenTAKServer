@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,8 @@ def make_authenticator():
     auth.app = MagicMock()
     auth.logger = MagicMock()
     auth.identity_names = {}
+    auth.identity_ids = {}
+    auth.identity_user_ids = {}
     return auth
 
 
@@ -40,7 +43,7 @@ def issue_certificate(issuer_key, issuer_name, common_name, client_auth):
     return builder.sign(issuer_key, hashes.SHA256())
 
 
-def test_only_ots_issued_client_certificate_yields_device_uid(tmp_path):
+def test_only_ots_issued_leaf_certificate_is_accepted(tmp_path):
     ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "OTS Test CA")])
     now = datetime.now(timezone.utc)
@@ -66,26 +69,93 @@ def test_only_ots_issued_client_certificate_yields_device_uid(tmp_path):
     app.config.get.return_value = str(tmp_path)
 
     assert (
-        MumbleAuthenticator._verified_client_common_name(
+        MumbleAuthenticator._verified_client_certificate(
             app, [ots_client.public_bytes(serialization.Encoding.DER)]
-        )
-        == "ANDROID-verified"
+        ).subject
+        == ots_client.subject
     )
     assert (
-        MumbleAuthenticator._verified_client_common_name(
+        MumbleAuthenticator._verified_client_certificate(
             app, [untrusted_client.public_bytes(serialization.Encoding.DER)]
         )
         is None
     )
 
 
+def test_verified_leaf_resolves_through_exact_enrollment_record(tmp_path):
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "OTS Test CA")])
+    now = datetime.now(timezone.utc)
+    ca_certificate = (
+        x509.CertificateBuilder()
+        .subject_name(ca_name)
+        .issuer_name(ca_name)
+        .public_key(ca_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - timedelta(minutes=1))
+        .not_valid_after(now + timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .sign(ca_key, hashes.SHA256())
+    )
+    client = issue_certificate(ca_key, ca_name, "enrollment-csr-cn", True)
+    spoof = issue_certificate(ca_key, ca_name, "ANDROID-target", True)
+    (tmp_path / "ca.pem").write_bytes(ca_certificate.public_bytes(serialization.Encoding.PEM))
+    client_path = tmp_path / "client.pem"
+    client_path.write_bytes(client.public_bytes(serialization.Encoding.PEM))
+
+    app = MagicMock()
+    app.config.get.return_value = str(tmp_path)
+    enrollment = MagicMock(
+        common_name="enrollment-csr-cn",
+        user_cert_filename=str(client_path),
+        eud=MagicMock(uid="ANDROID-real", user_id=42, callsign="ANVIL"),
+    )
+    certificate_model = MagicMock()
+    certificate_model.query.filter_by.return_value.all.side_effect = [
+        [enrollment],
+        [],
+    ]
+    certificate_module = ModuleType("opentakserver.models.Certificate")
+    certificate_module.Certificate = certificate_model
+
+    with patch.dict("sys.modules", {"opentakserver.models.Certificate": certificate_module}):
+        resolved = MumbleAuthenticator._verified_certificate_record(
+            app, [client.public_bytes(serialization.Encoding.DER)]
+        )
+        rejected_spoof = MumbleAuthenticator._verified_certificate_record(
+            app, [spoof.public_bytes(serialization.Encoding.DER)]
+        )
+
+    assert resolved.eud.uid == "ANDROID-real"
+    assert resolved.common_name != resolved.eud.uid
+    assert rejected_spoof is None
+
+
+def test_vx_username_must_match_enrolled_eud_callsign():
+    eud = MagicMock(callsign="COMMAND ONE")
+
+    assert (
+        MumbleAuthenticator._canonical_vx_username(
+            eud, "COMMAND_ONE---47c4c853-4e52-4b97-9a0b-08a0f961b0fa"
+        )
+        == "COMMAND_ONE---47c4c853-4e52-4b97-9a0b-08a0f961b0fa"
+    )
+    assert (
+        MumbleAuthenticator._canonical_vx_username(
+            eud, "IMPOSTOR---47c4c853-4e52-4b97-9a0b-08a0f961b0fa"
+        )
+        is None
+    )
+
+
 def test_vx_parallel_connections_receive_distinct_ids():
+    auth = make_authenticator()
     user = MagicMock(id=42, username="test_alpha")
     first_username = "ANVIL---47c4c853-4e52-4b97-9a0b-08a0f961b0fa"
     second_username = "ANVIL---9501be80-73bd-4df2-afc5-d3980e692d3f"
 
-    first_id, first_name = MumbleAuthenticator.mumble_identity(user, True, first_username)
-    second_id, second_name = MumbleAuthenticator.mumble_identity(user, True, second_username)
+    first_id, first_name = auth.mumble_identity(user, True, first_username)
+    second_id, second_name = auth.mumble_identity(user, True, second_username)
 
     assert first_id != second_id
     assert first_name == first_username
@@ -93,11 +163,12 @@ def test_vx_parallel_connections_receive_distinct_ids():
 
 
 def test_desktop_identity_uses_stable_ots_user_range():
+    auth = make_authenticator()
     user = MagicMock(id=42, username="test_alpha")
 
-    mumble_id, display_name = MumbleAuthenticator.mumble_identity(user, False, "test_alpha")
+    mumble_id, display_name = auth.mumble_identity(user, False, "test_alpha")
 
-    assert mumble_id == 42000
+    assert mumble_id == 42
     assert display_name == "test_alpha"
 
 
@@ -110,7 +181,7 @@ def test_vx_certificate_identity_authenticates_without_password():
         patch.object(
             MumbleAuthenticator,
             "resolve_identity",
-            return_value=(user, True, True),
+            return_value=(user, True, True, vx_username),
         ),
         patch("opentakserver.mumble.mumble_authenticator.verify_password") as verify_password,
     ):
@@ -118,7 +189,7 @@ def test_vx_certificate_identity_authenticates_without_password():
             vx_username, "", [b"certificate"], "hash", False
         )
 
-    assert mumble_id != user.id * 1000
+    assert mumble_id >= 1_000_000_000
     assert display_name == vx_username
     assert groups == []
     verify_password.assert_not_called()
@@ -132,7 +203,7 @@ def test_unverified_callsign_requires_ots_password():
         patch.object(
             MumbleAuthenticator,
             "resolve_identity",
-            return_value=(user, True, False),
+            return_value=(user, True, False, "ANVIL---untrusted"),
         ),
         patch(
             "opentakserver.mumble.mumble_authenticator.verify_password",

@@ -11,7 +11,7 @@ from opentakserver.mumble.mumble_ice_app import (  # noqa: E402
 )
 
 
-def make_app():
+def make_app(tmp_path=None):
     app = MagicMock()
     app.config = {
         "OTS_MUMBLE_ICE_HOST": "mumble-server",
@@ -20,6 +20,7 @@ def make_app():
         "OTS_MUMBLE_ICE_SECRET": "test-ice-secret",
         "OTS_MUMBLE_ICE_RETRY_SECONDS": 7,
         "OTS_MUMBLE_ICE_MAX_RETRY_SECONDS": 20,
+        "OTS_DATA_FOLDER": str(tmp_path) if tmp_path else "/tmp",
     }
     return app
 
@@ -62,6 +63,16 @@ def test_mumble_ice_daemon_configures_shared_secret():
     communicator.getImplicitContext.return_value.put.assert_called_once_with(
         "secret", "test-ice-secret"
     )
+
+
+def test_mumble_ice_daemon_readiness_file_tracks_current_state(tmp_path):
+    daemon = MumbleIceDaemon(make_app(tmp_path), MagicMock())
+
+    daemon._set_ready(True)
+    assert (tmp_path / "mumble-auth.ready").read_text() == "ready\n"
+
+    daemon._set_ready(False)
+    assert not (tmp_path / "mumble-auth.ready").exists()
 
 
 def test_mumble_ice_daemon_waits_before_retrying_failed_connection():
